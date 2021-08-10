@@ -1,7 +1,7 @@
 ##
 ## This file is part of the libsigrokdecode project.
 ##
-## Copyright (C) 2019-2020 Benjamin Vernoux <bvernoux@gmail.com>
+## Copyright (C) 2019-2021 Benjamin Vernoux <bvernoux@gmail.com>
 ##
 ## This program is free software; you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -16,9 +16,16 @@
 ## You should have received a copy of the GNU General Public License
 ## along with this program; if not, see <http://www.gnu.org/licenses/>.
 ##
-## v0.1 - 17 September 2019 B.VERNOUX using ST25R3916 Datasheet DS12484 Rev 1 (January 2019)
-## v0.2 - 28 April 2020 B.VERNOUX using ST25R3916 Datasheet DS12484 Rev 2 (December 2019) https://www.st.com/resource/en/datasheet/st25r3916.pdf
-## v0.3 - 17 June 2020 B.VERNOUX using ST25R3916 Datasheet DS12484 Rev 3 (04 June 2020) https://www.st.com/resource/en/datasheet/st25r3916.pdf
+## v0.1 - 17 September 2019 B.VERNOUX
+### Use ST25R3916 Datasheet DS12484 Rev 1 (January 2019)
+## v0.2 - 28 April 2020 B.VERNOUX 
+### Use ST25R3916 Datasheet DS12484 Rev 2 (December 2019)
+## v0.3 - 17 June 2020 B.VERNOUX 
+### Use ST25R3916 Datasheet DS12484 Rev 3 (04 June 2020)
+## v0.4 - 10 Aug 2021 B.VERNOUX 
+### Fix FIFOR/FIFOW issues with Pulseview (with "Tabular Output View") 
+### because of FIFO Read/FIFO Write commands, was not returning the 
+### annotations short name FIFOR/FIFOW
 
 import sigrokdecode as srd
 from collections import namedtuple
@@ -34,14 +41,14 @@ Data = namedtuple('Data', ['mosi', 'miso'])
 
 class Decoder(srd.Decoder):
     api_version = 3
-    id = 'st25r3916_spi'
-    name = 'ST25R3916'
-    longname = 'STMicroelectronics ST25R3916'
-    desc = 'High performance NFC universal device and EMVCo reader.'
+    id = 'st25r39xx_spi'
+    name = 'ST25R39xx (SPI mode)'
+    longname = 'STMicroelectronics ST25R39xx'
+    desc = 'High performance NFC universal device and EMVCo reader protocol.'
     license = 'gplv2+'
     inputs = ['spi']
     outputs = []
-    tags = ['IC', 'Wireless/RF', 'NFC']
+    tags = ['IC', 'Wireless/RF']
     annotations = (
         ('Read', 'Burst register read'),
         ('Write', 'Burst register write'),
@@ -56,7 +63,7 @@ class Decoder(srd.Decoder):
         ('warning', 'Warning'),
     )
     annotation_rows = (
-        ('reg', 'Regs', (Ann.prefixes('BURST_'))),
+        ('regs', 'Regs', (Ann.prefixes('BURST_'))),
         ('cmds', 'Commands', (Ann.DIRECTCMD,)),
         ('data', 'Data', (Ann.prefixes('FIFO_'))),
         ('status', 'Status register', (Ann.STATUS,)),
@@ -116,7 +123,7 @@ class Decoder(srd.Decoder):
         the decoding of the following data bytes.'''
         c = self.parse_command(b)
         if c is None:
-            self.warn(pos, 'unknown command')
+            self.warn(pos, 'Unknown command')
             return
 
         self.cmd, self.dat, self.min, self.max = c
@@ -130,10 +137,10 @@ class Decoder(srd.Decoder):
 
     def format_command(self):
         '''Returns the label for the current command.'''
-        if self.cmd in ('Write', 'Read', 'WriteB', 'ReadB', 'WriteT', 'ReadT', 'FIFO Write', 'FIFO Read'):
+        if self.cmd in ('Write', 'Read', 'WriteB', 'ReadB', 'WriteT', 'ReadT', 'FIFOW', 'FIFOR'):
             return self.cmd
         if self.cmd == 'Cmd':
-            reg = dir_cmd.get(self.dat, 'unknown direct command')
+            reg = dir_cmd.get(self.dat, 'Unknown direct command')
             return '{} {}'.format(self.cmd, reg)
         else:
             return 'TODO Cmd {}'.format(self.cmd)
@@ -154,7 +161,7 @@ class Decoder(srd.Decoder):
             if (b & 0xC0) == 0x40:
                 return ('ReadB', addr, 1, 99999)
             else:
-                self.warn(pos, 'unknown address/command combination')
+                self.warn(pos, 'Unknown address/command combination')
         # previous command was 'TestAccess'
         elif self.cmd == 'TestAccess':
             if (b & 0xC0) == 0x00:
@@ -162,30 +169,30 @@ class Decoder(srd.Decoder):
             if (b & 0xC0) == 0x40:
                 return ('ReadT', addr, 1, 99999)
             else:
-                self.warn(pos, 'unknown address/command combination')
+                self.warn(pos, 'Unknown address/command combination')
         else:
             # Space A regs or other operation modes (except Space B)
-            # Register Write					0b00xxxxxx 0x00 to 0x3F => 'Write'
-            # Register Read						0b01xxxxxx 0x40 to 0x7F => 'Read'
+            # Register Write   0b00xxxxxx 0x00 to 0x3F => 'Write'
+            # Register Read    0b01xxxxxx 0x40 to 0x7F => 'Read'
             if (b <= 0x7F):
                 if (b & 0xC0) == 0x00:
                     return ('Write', addr, 1, 99999)
                 if (b & 0xC0) == 0x40:
                     return ('Read', addr, 1, 99999)
                 else:
-                    self.warn(pos, 'unknown address/command combination')
+                    self.warn(pos, 'Unknown address/command combination')
             else:
-                # FIFO Load					0b10000000 0x80 => 'FIFO Write'
-                # PT_memory loadA-config	0b10100000 0xA0 => 'Write'
-                # PT_memory loadF-config	0b10101000 0xA8 => 'Write'
-                # PT_memory loadTSN data	0b10101100 0xAC => 'Write'
-                # PT_memory Read			0b10111111 0xBF => 'Read'
-                # FIFO Read					0b10011111 0x9F => 'FIFO Read'
-                # Direct Command			0b11xxx1xx 0xC0 to 0xE8 => 'Cmd'
-                # Register Space-B Access	0b11111011 0xFB => 'Space B'
-                # Register Test Access	0b11111100 0xFC => 'TestAccess'
+                # FIFO Load                 0b10000000 0x80 => 'FIFO Write'
+                # PT_memory loadA-config    0b10100000 0xA0 => 'Write'
+                # PT_memory loadF-config    0b10101000 0xA8 => 'Write'
+                # PT_memory loadTSN data    0b10101100 0xAC => 'Write'
+                # PT_memory Read            0b10111111 0xBF => 'Read'
+                # FIFO Read                 0b10011111 0x9F => 'FIFO Read'
+                # Direct Command            0b11xxx1xx 0xC0 to 0xE8 => 'Cmd'
+                # Register Space-B Access   0b11111011 0xFB => 'Space B'
+                # Register Test Access      0b11111100 0xFC => 'TestAccess'
                 if b == 0x80:
-                    return ('FIFO Write', b, 1, 99999)
+                    return ('FIFOW', b, 1, 99999)
                 if b == 0xA0:
                     return ('Write', b, 1, 99999)
                 if b == 0xA8:
@@ -195,7 +202,7 @@ class Decoder(srd.Decoder):
                 if b == 0xBF:
                     return ('Read', b, 1, 99999)
                 if b == 0x9F:
-                    return ('FIFO Read', b, 1, 99999)
+                    return ('FIFOR', b, 1, 99999)
                 if (b >= 0x0C and b <= 0xE8) :
                     return ('Cmd', b, 0, 0)
                 if b == 0xFB:
@@ -203,7 +210,7 @@ class Decoder(srd.Decoder):
                 if b == 0xFC:
                     return ('TestAccess', b, 0, 0)
                 else:
-                    self.warn(pos, 'unknown address/command combination')
+                    self.warn(pos, 'Unknown address/command combination')
 
     def decode_reg(self, pos, ann, regid, data):
         '''Decodes a register.
@@ -219,19 +226,19 @@ class Decoder(srd.Decoder):
             elif (ann == Ann.BURST_READB) or (ann == Ann.BURST_WRITEB):
                 # Get the name of the register.
                 if regid not in regsSpaceB:
-                    self.warn(pos, 'unknown register SpaceB')
+                    self.warn(pos, 'Unknown register SpaceB')
                     return
                 name = '{} ({:02X})'.format(regsSpaceB[regid], regid)
             elif (ann == Ann.BURST_READT) or (ann == Ann.BURST_WRITET):
                 # Get the name of the register.
                 if regid not in regsTest:
-                    self.warn(pos, 'unknown register Test')
+                    self.warn(pos, 'Unknown register Test')
                     return
                 name = '{} ({:02X})'.format(regsTest[regid], regid)
             else:
                 # Get the name of the register.
                 if regid not in regsSpaceA:
-                    self.warn(pos, 'unknown register SpaceA')
+                    self.warn(pos, 'Unknown register SpaceA')
                     return
                 name = '{} ({:02X})'.format(regsSpaceA[regid], regid)
         else:
@@ -276,14 +283,14 @@ class Decoder(srd.Decoder):
             self.decode_reg(pos, Ann.BURST_WRITET, self.dat, self.mosi_bytes())
         elif self.cmd == 'ReadT':
             self.decode_reg(pos, Ann.BURST_READT, self.dat, self.miso_bytes())
-        elif self.cmd == 'FIFO Write':
+        elif self.cmd == 'FIFOW':
             self.decode_reg(pos, Ann.FIFO_WRITE, self.dat, self.mosi_bytes())
-        elif self.cmd == 'FIFO Read':
+        elif self.cmd == 'FIFOR':
             self.decode_reg(pos, Ann.FIFO_READ, self.dat, self.miso_bytes())
         elif self.cmd == 'Cmd':
             self.decode_reg(pos, Ann.DIRECTCMD, self.dat, self.mosi_bytes())
         else:
-            self.warn(pos, 'unhandled command')
+            self.warn(pos, 'Unhandled command {}'.format(self.cmd))
 
     def decode(self, ss, es, data):
         if not self.requirements_met:
@@ -306,7 +313,7 @@ class Decoder(srd.Decoder):
                     # Check if we got the minimum number of data bytes
                     # after the command byte.
                     if len(self.mb) < self.min:
-                        self.warn((ss, ss), 'missing data bytes')
+                        self.warn((ss, ss), 'Missing data bytes')
                     elif self.mb:
                         self.finish_command(Pos(self.ss_mb, self.es_mb))
 
@@ -322,14 +329,14 @@ class Decoder(srd.Decoder):
                 raise ChannelError('Both MISO and MOSI pins are required.')
 
             if self.first:
-                # Register Space-B Access	0b11111011 0xFB => 'Space B'
+                # Register Space-B Access   0b11111011 0xFB => 'Space B'
                 if mosi == 0xFB:
                     self.first = True
                     # First MOSI byte 'Space B' command.
                     self.decode_command(pos, mosi)
                     # First MISO byte is always the status register.
                     #self.decode_reg(pos, ANN_STATUS, 'STATUS', [miso])
-                # Register TestAccess Access	0b11111100 0xFC => 'TestAccess'
+                # Register TestAccess Access   0b11111100 0xFC => 'TestAccess'
                 elif mosi == 0xFC:
                     self.first = True
                     # First MOSI byte 'TestAccess' command.
@@ -344,7 +351,7 @@ class Decoder(srd.Decoder):
                     #self.decode_reg(pos, ANN_STATUS, 'STATUS', [miso])
             else:
                 if not self.cmd or len(self.mb) >= self.max:
-                    self.warn(pos, 'excess byte')
+                    self.warn(pos, 'Excess byte')
                 else:
                     # Collect the bytes after the command byte.
                     if self.ss_mb == -1:
